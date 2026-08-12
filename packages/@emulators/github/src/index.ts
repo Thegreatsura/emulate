@@ -4,7 +4,7 @@ import type { ServicePlugin, Store, WebhookDispatcher, TokenMap, AppEnv, RouteCo
 import { getGitHubStore } from "./store.js";
 import type { GitHubStore } from "./store.js";
 import type { GitHubAppInstallation } from "./entities.js";
-import { generateNodeId, generateSha } from "./helpers.js";
+import { generateNodeId } from "./helpers.js";
 import { usersRoutes } from "./routes/users.js";
 import { reposRoutes } from "./routes/repos.js";
 import { issuesRoutes } from "./routes/issues.js";
@@ -13,6 +13,8 @@ import { commentsRoutes } from "./routes/comments.js";
 import { reviewsRoutes } from "./routes/reviews.js";
 import { labelsAndMilestonesRoutes } from "./routes/labels.js";
 import { branchesAndGitRoutes } from "./routes/branches.js";
+import { contentsRoutes } from "./routes/contents.js";
+import { commitsRoutes } from "./routes/commits.js";
 import { orgsAndTeamsRoutes } from "./routes/orgs.js";
 import { releasesRoutes } from "./routes/releases.js";
 import { webhooksRoutes } from "./routes/webhooks.js";
@@ -23,6 +25,7 @@ import { rateLimitRoutes } from "./routes/rate-limit.js";
 import { metaRoutes } from "./routes/meta.js";
 import { oauthRoutes } from "./routes/oauth.js";
 import { appsRoutes } from "./routes/apps.js";
+import { findOrCreateBlob, findOrCreateCommit, findOrCreateTree } from "./git-helpers.js";
 
 export { getGitHubStore, type GitHubStore } from "./store.js";
 export * from "./entities.js";
@@ -247,13 +250,14 @@ export function seedFromConfig(store: Store, baseUrl: string, config: GitHubSeed
       gh.repos.update(repo.id, { node_id: generateNodeId("Repository", repo.id) });
 
       if (r.auto_init !== false) {
-        const sha = generateSha();
-        const treeSha = generateSha();
+        const readme = `# ${r.name}\n${r.description ? `\n${r.description}\n` : ""}`;
+        const readmeSize = Buffer.byteLength(readme, "utf8");
+        const blob = findOrCreateBlob(gh, repo.id, Buffer.from(readme, "utf8"));
+        const tree = findOrCreateTree(gh, repo.id, [
+          { path: "README.md", mode: "100644", type: "blob", sha: blob.sha, size: readmeSize },
+        ]);
 
-        const commit = gh.commits.insert({
-          repo_id: repo.id,
-          sha,
-          node_id: "",
+        const commit = findOrCreateCommit(gh, repo.id, {
           message: "Initial commit",
           author_name: r.owner,
           author_email: `${r.owner}@localhost`,
@@ -261,32 +265,22 @@ export function seedFromConfig(store: Store, baseUrl: string, config: GitHubSeed
           committer_name: r.owner,
           committer_email: `${r.owner}@localhost`,
           committer_date: repo.created_at,
-          tree_sha: treeSha,
+          tree_sha: tree.sha,
           parent_shas: [],
           user_id: owner.id,
         });
-        gh.commits.update(commit.id, { node_id: generateNodeId("Commit", commit.id) });
-
-        const tree = gh.trees.insert({
-          repo_id: repo.id,
-          sha: treeSha,
-          node_id: "",
-          tree: [{ path: "README.md", mode: "100644", type: "blob", sha: generateSha(), size: 20 }],
-          truncated: false,
-        });
-        gh.trees.update(tree.id, { node_id: generateNodeId("Tree", tree.id) });
 
         gh.branches.insert({
           repo_id: repo.id,
           name: defaultBranch,
-          sha,
+          sha: commit.sha,
           protected: false,
         });
 
         const refRow = gh.refs.insert({
           repo_id: repo.id,
           ref: `refs/heads/${defaultBranch}`,
-          sha,
+          sha: commit.sha,
           node_id: "",
         });
         gh.refs.update(refRow.id, { node_id: generateNodeId("Ref", refRow.id) });
@@ -378,14 +372,16 @@ function findInstallationsForRepo(
   repoName: string | undefined,
   event: string,
 ): GitHubAppInstallation[] {
-  const ownerEntity = gh.users.findOneBy("login", ownerLogin) ?? gh.orgs.findOneBy("login", ownerLogin);
-  if (!ownerEntity) return [];
-
   const repoEntity = repoName ? gh.repos.findOneBy("full_name", `${ownerLogin}/${repoName}`) : null;
+  const ownerUser = gh.users.findOneBy("login", ownerLogin);
+  const ownerOrg = gh.orgs.findOneBy("login", ownerLogin);
+  const ownerId = repoEntity?.owner_id ?? ownerUser?.id ?? ownerOrg?.id;
+  const ownerType = repoEntity?.owner_type ?? (ownerUser ? "User" : ownerOrg ? "Organization" : undefined);
+  if (ownerId === undefined || ownerType === undefined) return [];
 
   const results: GitHubAppInstallation[] = [];
   for (const inst of gh.appInstallations.all()) {
-    if (inst.account_id !== ownerEntity.id) continue;
+    if (inst.account_id !== ownerId || inst.account_type !== ownerType) continue;
     if (inst.suspended_at) continue;
 
     const ghApp = gh.apps.all().find((a) => a.app_id === inst.app_id);
@@ -493,6 +489,10 @@ export const githubPlugin: ServicePlugin = {
     metaRoutes(ctx);
     oauthRoutes(ctx);
     appsRoutes(ctx);
+    contentsRoutes(ctx);
+    // Registered last: the catch-all /commits/:ref{.+} route must not shadow
+    // /commits/:sha/comments (comments.ts) or /commits/:ref/check-* (checks.ts).
+    commitsRoutes(ctx);
   },
   seed(store: Store, baseUrl: string): void {
     seedDefaults(store, baseUrl);
