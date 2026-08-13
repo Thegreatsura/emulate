@@ -3,7 +3,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { Hono } from "@emulators/core";
 import { Store, WebhookDispatcher } from "@emulators/core";
 import { authMiddleware, createApiErrorHandler, createErrorHandler, type TokenMap } from "@emulators/core";
-import { githubPlugin, seedFromConfig, getGitHubStore } from "../index.js";
+import { githubPlugin, seedFromConfig, getGitHubStore, materializeGitHubSeedConfig } from "../index.js";
 
 const base = "http://localhost:4000";
 
@@ -54,6 +54,101 @@ function base64UrlJson(value: unknown): string {
 function authHeaders(): Record<string, string> {
   return { Authorization: "Bearer test-token" };
 }
+
+describe("GitHub App seed materialization", () => {
+  it("generates omitted keys without changing explicit keys", async () => {
+    const explicitKey = "explicit-key-bytes";
+    const seed = {
+      apps: [
+        { app_id: 10, slug: "generated", name: "Generated" },
+        { app_id: 11, slug: "explicit", name: "Explicit", private_key: explicitKey },
+        { app_id: 12, slug: "generated-second", name: "Generated Second" },
+      ],
+    };
+
+    const materialized = await materializeGitHubSeedConfig(seed);
+
+    expect(seed.apps[0]).not.toHaveProperty("private_key");
+    expect(materialized.config.apps?.[0]?.private_key).toMatch(/^-----BEGIN RSA PRIVATE KEY-----/);
+    expect(materialized.config.apps?.[1]?.private_key).toBe(explicitKey);
+    expect(materialized.config.apps?.[2]?.private_key).toMatch(/^-----BEGIN RSA PRIVATE KEY-----/);
+    expect(materialized.config.apps?.map((app) => app.slug)).toEqual(["generated", "explicit", "generated-second"]);
+    expect(materialized.generatedPrivateKeys).toEqual([
+      expect.objectContaining({
+        app_id: 10,
+        slug: "generated",
+        private_key: materialized.config.apps?.[0]?.private_key,
+      }),
+      expect.objectContaining({
+        app_id: 12,
+        slug: "generated-second",
+        private_key: materialized.config.apps?.[2]?.private_key,
+      }),
+    ]);
+  });
+
+  it.each([
+    {
+      name: "app ID",
+      apps: [
+        { app_id: 20, slug: "generated", name: "Generated" },
+        { app_id: 21, slug: "explicit", name: "Explicit", private_key: "explicit-key" },
+        { app_id: 20, slug: "duplicate-last", name: "Duplicate Last" },
+      ],
+      message: "Duplicate GitHub App app_id: 20",
+    },
+    {
+      name: "slug",
+      apps: [
+        { app_id: 22, slug: "duplicate", name: "Generated" },
+        { app_id: 23, slug: "explicit", name: "Explicit", private_key: "explicit-key" },
+        { app_id: 24, slug: "duplicate", name: "Duplicate Last" },
+      ],
+      message: 'Duplicate GitHub App slug: "duplicate"',
+    },
+  ])("rejects a duplicate $name before generating keys", async ({ apps, message }) => {
+    const timer = vi.fn();
+    setTimeout(timer, 0);
+
+    await expect(materializeGitHubSeedConfig({ apps })).rejects.toThrow(message);
+    expect(timer).not.toHaveBeenCalled();
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(timer).toHaveBeenCalled();
+  });
+
+  it("yields the event loop while generating multiple keys", async () => {
+    let timerRan = false;
+    setTimeout(() => {
+      timerRan = true;
+    }, 0);
+
+    const materialized = await materializeGitHubSeedConfig({
+      apps: Array.from({ length: 4 }, (_, index) => ({
+        app_id: 30 + index,
+        slug: `async-${index}`,
+        name: `Async ${index}`,
+      })),
+    });
+
+    expect(timerRan).toBe(true);
+    expect(materialized.generatedPrivateKeys).toHaveLength(4);
+  });
+
+  it("requires direct seed callers to provide a private key", () => {
+    const store = new Store();
+    githubPlugin.seed?.(store, base);
+
+    expect(() =>
+      seedFromConfig(store, base, {
+        users: [{ login: "should-not-exist" }],
+        apps: [{ app_id: 12, slug: "missing", name: "Missing" }],
+      }),
+    ).toThrow("requires private_key when seedFromConfig is called directly");
+    expect(getGitHubStore(store).users.findOneBy("login", "should-not-exist")).toBeUndefined();
+  });
+});
 
 describe("webhook installation enrichment", () => {
   const mockFetch = vi.fn().mockResolvedValue({ ok: true, status: 200 });
