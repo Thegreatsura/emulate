@@ -195,7 +195,14 @@ seedFromConfig(store, baseUrl, materialized.config)
 const privateKey = materialized.generatedPrivateKeys[0]?.private_key
 ```
 
-The `emulate` package performs this materialization automatically in `createEmulator` and exposes generated keys through `generatedSecrets`.
+The `emulate` package performs this materialization automatically in `createEmulator` and exposes generated keys through `generatedSecrets`. The CLI can do the same when a private delivery file is requested:
+
+```bash
+npx emulate start --service github --seed emulate.config.yaml \
+  --generated-secrets-file .emulate-secrets.json
+```
+
+The destination must not exist. emulate removes inherited ACLs, verifies effective owner-only access, and publishes complete JSON before opening listeners or configuring portless. Handled startup failures remove the invocation-owned artifact. A hard termination can leave a complete artifact that must be removed manually after confirming no invocation is using it. Explicit keys are excluded from the artifact. Linux requires `setfacl` and `getfacl` from the `acl` package. The flag fails closed when access controls cannot be verified and is not supported on Windows. Without `--generated-secrets-file`, CLI seed files continue requiring `private_key`.
 
 ## Links
 
