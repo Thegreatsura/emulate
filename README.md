@@ -1074,6 +1074,8 @@ export const { GET, POST, PUT, PATCH, DELETE } = createEmulateHandler({
 })
 ```
 
+GitHub App seeds may omit `private_key`. Retain the handler to call server-only `generatedSecrets()`; explicit keys are excluded. Persisted snapshots contain generated keys, so keep the backend private.
+
 ### Auth.js / NextAuth configuration
 
 Point your provider at the emulator paths on the same origin:
@@ -1143,7 +1145,7 @@ import { filePersistence } from '@emulators/core'
 persistence: filePersistence('.emulate/state.json'),
 ```
 
-The persistence adapter is called on cold start (load) and after every mutating request (save). Saves are serialized via an internal queue to prevent race conditions.
+The persistence adapter loads on cold start and saves after mutations. Generated identities also require atomic create-or-read `initialize`; see `@emulators/core`.
 
 ## Nuxt Integration
 
@@ -1185,6 +1187,8 @@ export default defineEventHandler(createEmulateHandler({
   },
 }))
 ```
+
+GitHub App seeds may omit `private_key`. Retain the handler to call server-only `generatedSecrets()`; explicit keys are excluded. Persisted snapshots contain generated keys, so keep the backend private.
 
 ### Nuxt config
 
@@ -1236,7 +1240,7 @@ export default defineEventHandler(createEmulateHandler({
 }))
 ```
 
-The persistence adapter is called on cold start (load) and after every mutating request (save). Saves are serialized via an internal queue to prevent race conditions.
+The persistence adapter loads on cold start and saves after mutations. Generated identities also require atomic create-or-read `initialize`; see `@emulators/core`.
 
 ## Architecture
 
