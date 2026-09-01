@@ -23,6 +23,7 @@ Framework adapters:
 
 GitHub API coverage:
   Includes repository contents, raw downloads, commit history, commit details, and ref comparisons.
+  Inspect minted installation-token metadata at GET /_emulate/installation-tokens.
 
 Linear API coverage:
   Issue queries and mutations include numeric priority and derived priorityLabel fields.
